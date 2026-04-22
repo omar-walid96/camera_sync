@@ -23,6 +23,13 @@ target_link_libraries(cam_viewer_node ${OpenCV_LIBS})
 install(TARGETS sync_bench_node cam_viewer_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 
+# Python nodes/scripts — installed to lib so ros2 run can find them.
+install(PROGRAMS
+  scripts/opencv_cam_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME opencv_cam_node
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
