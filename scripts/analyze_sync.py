@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import re
 import pandas as pd
 import numpy as np
+
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze cam_sync_bench CSV output.")
@@ -10,40 +12,42 @@ def main():
 
     df = pd.read_csv(args.csv)
 
-    # delta_ms is already signed (t_a - t_b) if present; recompute from raw ns otherwise
-    if "delta_ms" in df.columns:
-        df["signed_ms"] = df["delta_ms"]
-    else:
-        df["signed_ms"] = (df["t_a_ns"] - df["t_b_ns"]) / 1e6
+    # Auto-detect pair columns (delta_I_J_ms) — handles N=2,3,4 transparently.
+    pair_cols = sorted(c for c in df.columns if re.match(r"delta_\d+_\d+_ms", c))
+    if not pair_cols:
+        # Legacy 2-topic format (t_a_ns / t_b_ns, no delta column)
+        df["delta_0_1_ms"] = (df["t_a_ns"] - df["t_b_ns"]) / 1e6
+        pair_cols = ["delta_0_1_ms"]
 
-    df["spread_ms"] = df["signed_ms"].abs()
+    # Max absolute spread across all pairs — the primary sync quality metric.
+    df["max_spread_ms"] = df[pair_cols].abs().max(axis=1)
 
-    n = len(df)
-    bias   = df["signed_ms"].mean()
-    jitter = df["signed_ms"].std()
-    one_sided = (df["signed_ms"] > 0).mean()   # fraction positive
-
-    print(f"\n{'─'*52}")
+    print(f"\n{'─'*56}")
     print(f"  File   : {args.csv}")
-    print(f"  Rows   : {n}")
-    print(f"{'─'*52}")
-    print(f"  signed delta (t_a − t_b)  [ms]")
-    print(df["signed_ms"].describe().to_string())
-    print(f"{'─'*52}")
-    print(f"  bias        : {bias:+.2f} ms  ({'A leads B' if bias > 0 else 'B leads A'})")
-    print(f"  jitter 1σ   : {jitter:.2f} ms")
-    print(f"  positive    : {one_sided*100:.1f}%  (100% or 0% → pure bias)")
-    print(f"{'─'*52}")
-    print(f"  |spread| percentiles [ms]")
-    for p in [50, 90, 95, 99]:
-        val = np.percentile(df["spread_ms"], p)
-        budget = "✓" if val < 34 else "✗"
-        print(f"    p{p:<3}: {val:6.2f}  {budget}")
-    print(f"    max : {df['spread_ms'].max():6.2f}")
-    print(f"{'─'*52}")
+    print(f"  Rows   : {len(df)}   Pairs: {len(pair_cols)}")
+    print(f"{'─'*56}")
 
-    # Verdict
-    p99 = np.percentile(df["spread_ms"], 99)
+    for col in pair_cols:
+        m = re.match(r"delta_(\d+)_(\d+)_ms", col)
+        i, j = m.group(1), m.group(2)
+        s = df[col]
+        one_sided = (s > 0).mean()
+        print(f"\n  Pair [{i},{j}]  signed delta = t_{i} − t_{j}")
+        print(s.describe().to_string())
+        print(f"  bias      : {s.mean():+.2f} ms  ({'A leads' if s.mean() > 0 else 'B leads'})")
+        print(f"  jitter 1σ : {s.std():.2f} ms")
+        print(f"  positive  : {one_sided*100:.1f}%  (≈100% or ≈0% → fixed pipeline bias)")
+
+    print(f"\n{'─'*56}")
+    print(f"  Max-pair |spread| percentiles [ms]  (budget = 34 ms)")
+    for p in [50, 90, 95, 99]:
+        val = np.percentile(df["max_spread_ms"], p)
+        mark = "✓" if val < 34 else "✗"
+        print(f"    p{p:<3}: {val:7.2f}  {mark}")
+    print(f"    max : {df['max_spread_ms'].max():7.2f}")
+    print(f"{'─'*56}")
+
+    p99 = np.percentile(df["max_spread_ms"], 99)
     if p99 < 34:
         verdict = "WITHIN BUDGET (p99 < 34 ms)"
     elif p99 < 80:
@@ -51,12 +55,19 @@ def main():
     else:
         verdict = "BROKEN — likely QoS mismatch or clock source issue"
 
+    # Bias note only meaningful for a single dominant pair (N=2).
     bias_note = ""
-    if abs(bias) > 5 and one_sided > 0.9:
-        bias_note = f"\n  NOTE: {abs(bias):.1f} ms is fixed pipeline bias (not fixable by software sync)."
-        bias_note += f"\n        Real jitter = {jitter:.2f} ms stddev."
+    if len(pair_cols) == 1:
+        s = df[pair_cols[0]]
+        if abs(s.mean()) > 5 and (s > 0).mean() > 0.9:
+            bias_note = (
+                f"\n  NOTE: {abs(s.mean()):.1f} ms is fixed pipeline bias "
+                f"(V4L2 kernel-arrival lag vs RealSense HW timestamp)."
+                f"\n        True jitter = {s.std():.2f} ms stddev."
+            )
 
     print(f"\n  Verdict: {verdict}{bias_note}\n")
+
 
 if __name__ == "__main__":
     main()
