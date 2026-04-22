@@ -60,6 +60,10 @@ def _rs_node(serial: str, index: int, enable_depth: bool) -> Node:
         'enable_accel':               False,
         'rgb_camera.color_profile':   '640x480x30',
         'publish_tf':                 False,
+        # Align RealSense timestamps to system clock (CLOCK_REALTIME) so they
+        # are in the same domain as V4L2/UVC timestamps. Without this the SDK
+        # uses the camera's hardware clock, making cross-camera deltas meaningless.
+        'enable_global_time_sync':    True,
     }
     if enable_depth:
         params['depth_module.depth_profile'] = '640x480x30'

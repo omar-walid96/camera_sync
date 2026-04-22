@@ -23,8 +23,10 @@
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
+#include <cam_sync_msgs/msg/synced_frames.hpp>
 
-using Image = sensor_msgs::msg::Image;
+using Image        = sensor_msgs::msg::Image;
+using SyncedFrames = cam_sync_msgs::msg::SyncedFrames;
 namespace mf = message_filters;
 
 // ── Threaded bounded-queue CSV writer ────────────────────────────────────────
@@ -134,6 +136,8 @@ public:
           [this, i](const Image::ConstSharedPtr&) { ++counts_[i]; });
     }
 
+    pub_ = create_publisher<SyncedFrames>("synced_frames", rclcpp::SensorDataQoS());
+
     create_sync();
     register_callback();
 
@@ -221,6 +225,17 @@ private:
     for (size_t i = 0; i < N; ++i) row << ',' << ts[i];
     for (size_t p = 0; p < P; ++p) row << ',' << deltas[p];
     csv_->push(row.str());
+
+    SyncedFrames bundle;
+    bundle.stamp = now();
+    bundle.frames.reserve(N);
+    bundle.labels.reserve(N);
+    for (size_t i = 0; i < N; ++i) {
+      bundle.frames.push_back(*frames[i]);
+      bundle.labels.push_back(topics_[i]);
+    }
+    bundle.pairwise_spreads_ms.assign(deltas.begin(), deltas.end());
+    pub_->publish(bundle);
   }
 
   static double percentile(std::vector<double> v, double p) {
@@ -284,6 +299,7 @@ private:
   double print_period_s_;
   std::string csv_path_;
 
+  rclcpp::Publisher<SyncedFrames>::SharedPtr pub_;
   std::array<mf::Subscriber<Image>, N> subs_;
   std::shared_ptr<Sync> sync_;
   std::unique_ptr<CsvWriter> csv_;
