@@ -2,6 +2,175 @@
 
 ROS 2 Humble benchmark and live viewer for inter-camera timestamp synchronisation across up to 4 cameras (2 UVC + 2 Intel RealSense), including depth streams.
 
+
+## Setup
+
+### 1. ROS 2 and camera drivers
+
+```bash
+source /opt/ros/humble/setup.bash
+
+sudo apt install \
+  ros-humble-v4l2-camera \
+  ros-humble-realsense2-camera \
+  ros-humble-rmw-cyclonedds-cpp \
+  ros-humble-iceoryx-binding-c \
+  ros-humble-iceoryx-hoofs \
+  ros-humble-iceoryx-posh
+
+pip install pandas numpy   # for analyze_sync.py
+```
+
+### 2. CycloneDDS shared-memory transport
+
+This stack uses CycloneDDS with iceoryx shared-memory for zero-copy intra-host image transport. Two things are required:
+
+**a) Place the config file:**
+
+```bash
+mkdir -p ~/cyclonedds
+cp ~/camera_sync_ws/src/cam_sync_bench/cyclonedds.xml ~/cyclonedds/cyclonedds.xml
+```
+
+The file enables shared-memory and auto-detects the network interface:
+
+```xml
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface autodetermine="true"/>
+      </Interfaces>
+      <AllowMulticast>true</AllowMulticast>
+    </General>
+    <SharedMemory>
+      <Enable>true</Enable>
+      <LogLevel>info</LogLevel>
+    </SharedMemory>
+  </Domain>
+</CycloneDDS>
+```
+
+**b) Add to `~/.bashrc`** (so every terminal picks it up automatically):
+
+```bash
+source /opt/ros/humble/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file://$HOME/cyclonedds/cyclonedds.xml
+```
+
+Then reload: `source ~/.bashrc`
+
+`iox-roudi` (the iceoryx shared-memory daemon) must be running in a dedicated terminal before any node is launched:
+
+```bash
+iox-roudi
+```
+
+The "Falling back to built-in config" message is normal — the built-in pools are sufficient for this workload. If you see pool exhaustion warnings, pass the tuned config from this repo directly:
+
+```bash
+iox-roudi --config-file ~/camera_sync_ws/src/cam_sync_bench/roudi_config.toml
+```
+
+> If shared-memory is not needed, remove the `<SharedMemory>` block from `cyclonedds.xml` and skip `iox-roudi`.
+
+### 3. Build
+
+`cam_sync_msgs` (custom message package) must be built before `cam_sync_bench`.
+
+```bash
+cd ~/camera_sync_ws
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --packages-select cam_sync_msgs cam_sync_bench --symlink-install
+source install/setup.bash
+```
+
+> Always re-run `source install/setup.bash` after building `cam_sync_msgs` — its shared libraries must be on `LD_LIBRARY_PATH` before launching any node that uses `SyncedFrames`.
+
+> `--symlink-install` applies to Python launch files but **not** to `install(PROGRAMS ...)` entries (e.g. `opencv_cam_node`). Script changes to `opencv_cam_node.py` require a rebuild.
+
+## Run
+
+**Terminal 1** — iceoryx shared-memory daemon (required by CycloneDDS SHM transport):
+```bash
+# default built-in config (sufficient for normal use)
+iox-roudi
+
+# if you see pool exhaustion warnings, use the tuned config instead
+iox-roudi --config-file ~/camera_sync_ws/src/cam_sync_bench/roudi_config.toml
+```
+
+**Terminal 2** — cameras + benchmark:
+```bash
+# 2-camera: 1 UVC + 1 RealSense
+ros2 launch cam_sync_bench bench.launch.py \
+  uvc_device_0:=/dev/video0 \
+  rs_serial_0:=052622073756
+
+# 4-camera: 2 UVC + 2 RealSense (all 6 streams including depth)
+ros2 launch cam_sync_bench bench.launch.py \
+  uvc_device_0:=/dev/video0 \
+  uvc_device_1:=/dev/video8 \
+  rs_serial_0:=052622073756 \
+  rs_serial_1:=145522067777
+```
+
+> `uvc_use_opencv_1` defaults to `true` — DroidCam on `/dev/video8` is handled by `opencv_cam_node` automatically.
+> `sync_bench_node` starts 10 s after the cameras (configurable via `sync_delay_s`).
+
+**Terminal 3** — viewer (choose one):
+```bash
+# Original: subscribes to 6 individual topics, always shows 2×3 grid
+ros2 run cam_sync_bench cam_viewer_node
+
+# Decoupled: subscribes to /synced_frames, shows all pairwise spreads
+ros2 run cam_sync_bench synced_viewer_node
+```
+
+**After the run** — analyse the CSV:
+```bash
+python3 ~/camera_sync_ws/src/cam_sync_bench/scripts/analyze_sync.py
+```
+
+### Launch arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `uvc_device_0` | `/dev/video0` | V4L2 device path for UVC camera 0 |
+| `uvc_device_1` | *(empty — skip)* | V4L2 device path for UVC camera 1 |
+| `uvc_pixel_format_0` | `YUYV` | V4L2 pixel format for UVC camera 0 (ignored when `use_opencv=true`) |
+| `uvc_pixel_format_1` | `YU12` | V4L2 pixel format for UVC camera 1 (ignored when `use_opencv=true`) |
+| `uvc_use_opencv_0` | `false` | Use `opencv_cam_node` for UVC camera 0 (set `true` for YU12/I420 sources) |
+| `uvc_use_opencv_1` | `true` | Use `opencv_cam_node` for UVC camera 1 (default `true` — DroidCam only supports YU12) |
+| `rs_serial_0` | *(empty — skip)* | Serial number for RealSense 0 |
+| `rs_serial_1` | *(empty — skip)* | Serial number for RealSense 1 |
+| `rs_enable_depth_0` | `true` | Enable depth stream for RealSense 0 |
+| `rs_enable_depth_1` | `true` | Enable depth stream for RealSense 1 (set `false` for USB 2.1 devices) |
+| `sync_delay_s` | `10.0` | Seconds before `sync_bench_node` starts (0 = immediate) |
+| `slop_s` | `0.034` | ApproximateTime max interval (seconds) |
+| `csv_path` | `/tmp/sync_bench.csv` | Output CSV path |
+| `topics` | *(auto-built from active devices)* | Override topic list (YAML, 2–4 entries) |
+
+Topics for `sync_bench_node` are auto-derived from whichever color streams are active. Pass `topics:='[...]'` only when you need a custom subset.
+
+To find RealSense serial numbers: `rs-enumerate-devices | grep "Serial Number"`
+
+## Topics
+
+| Topic | Type | Publisher | Description |
+|-------|------|-----------|-------------|
+| `/cam_uvc_0/image_raw` | `sensor_msgs/Image` | `opencv_cam_node` / `v4l2_camera_node` | UVC camera 0 |
+| `/cam_uvc_1/image_raw` | `sensor_msgs/Image` | `opencv_cam_node` | UVC camera 1 |
+| `/camera_0/camera/color/image_raw` | `sensor_msgs/Image` | `realsense2_camera` | RealSense 0 color |
+| `/camera_0/camera/depth/image_rect_raw` | `sensor_msgs/Image` | `realsense2_camera` | RealSense 0 depth |
+| `/camera_1/camera/color/image_raw` | `sensor_msgs/Image` | `realsense2_camera` | RealSense 1 color |
+| `/camera_1/camera/depth/image_rect_raw` | `sensor_msgs/Image` | `realsense2_camera` | RealSense 1 depth |
+| `/synced_frames` | `cam_sync_msgs/SyncedFrames` | `sync_bench_node` | Bundled N-tuple after each match |
+
+The extra `camera/` segment in RealSense topics is a realsense2_camera v4.x naming convention (namespace + camera_name both default to `camera`).
+
+
 ## What it does
 
 ### `sync_bench_node`
@@ -93,111 +262,6 @@ python3 scripts/analyze_sync.py /tmp/sync_bench.csv
 UVC cameras (V4L2 / opencv_cam_node) use **CLOCK_REALTIME** (system time). RealSense cameras default to a hardware clock that is unrelated to system time. Without alignment, all cross-camera deltas are meaningless.
 
 `bench.launch.py` sets `enable_global_time_sync: True` on every RealSense node, which enables the SDK's continuous linear regression between hardware clock ticks and CLOCK_REALTIME samples. After this correction, RealSense `header.stamp` values are in the same domain as UVC timestamps and can be compared directly.
-
-## Prerequisites
-
-```bash
-source /opt/ros/humble/setup.bash
-sudo apt install ros-humble-v4l2-camera \
-                 ros-humble-realsense2-camera \
-                 ros-humble-rmw-cyclonedds-cpp
-
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export CYCLONEDDS_URI=file:///path/to/cyclonedds.xml
-
-pip install pandas numpy   # for analyze_sync.py
-```
-
-## Build
-
-`cam_sync_msgs` (custom message package) must be built first.
-
-```bash
-cd ~/camera_sync_ws
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --packages-select cam_sync_msgs cam_sync_bench --symlink-install
-source install/setup.bash
-```
-
-> Always re-run `source install/setup.bash` after building `cam_sync_msgs` — its shared libraries must be on `LD_LIBRARY_PATH` before launching any node that uses `SyncedFrames`.
-
-> `--symlink-install` applies to Python launch files but **not** to `install(PROGRAMS ...)` entries (e.g. `opencv_cam_node`). Script changes to `opencv_cam_node.py` require a rebuild.
-
-## Run
-
-**Terminal 1** — iceoryx shared-memory daemon (required by CycloneDDS SHM transport):
-```bash
-iox-roudi
-```
-
-**Terminal 2** — cameras + benchmark:
-```bash
-# 2-camera: 1 UVC + 1 RealSense
-ros2 launch cam_sync_bench bench.launch.py \
-  uvc_device_0:=/dev/video0 \
-  rs_serial_0:=052622073756
-
-# 4-camera: 2 UVC + 2 RealSense (all 6 streams including depth)
-ros2 launch cam_sync_bench bench.launch.py \
-  uvc_device_0:=/dev/video0 \
-  uvc_device_1:=/dev/video8 \
-  rs_serial_0:=052622073756 \
-  rs_serial_1:=145522067777
-```
-
-> `uvc_use_opencv_1` defaults to `true` — DroidCam on `/dev/video8` is handled by `opencv_cam_node` automatically.
-> `sync_bench_node` starts 10 s after the cameras (configurable via `sync_delay_s`).
-
-**Terminal 3** — viewer (choose one):
-```bash
-# Original: subscribes to 6 individual topics, always shows 2×3 grid
-ros2 run cam_sync_bench cam_viewer_node
-
-# Decoupled: subscribes to /synced_frames, shows all pairwise spreads
-ros2 run cam_sync_bench synced_viewer_node
-```
-
-**After the run** — analyse the CSV:
-```bash
-python3 ~/camera_sync_ws/src/cam_sync_bench/scripts/analyze_sync.py
-```
-
-### Launch arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `uvc_device_0` | `/dev/video0` | V4L2 device path for UVC camera 0 |
-| `uvc_device_1` | *(empty — skip)* | V4L2 device path for UVC camera 1 |
-| `uvc_pixel_format_0` | `YUYV` | V4L2 pixel format for UVC camera 0 (ignored when `use_opencv=true`) |
-| `uvc_pixel_format_1` | `YU12` | V4L2 pixel format for UVC camera 1 (ignored when `use_opencv=true`) |
-| `uvc_use_opencv_0` | `false` | Use `opencv_cam_node` for UVC camera 0 (set `true` for YU12/I420 sources) |
-| `uvc_use_opencv_1` | `true` | Use `opencv_cam_node` for UVC camera 1 (default `true` — DroidCam only supports YU12) |
-| `rs_serial_0` | *(empty — skip)* | Serial number for RealSense 0 |
-| `rs_serial_1` | *(empty — skip)* | Serial number for RealSense 1 |
-| `rs_enable_depth_0` | `true` | Enable depth stream for RealSense 0 |
-| `rs_enable_depth_1` | `true` | Enable depth stream for RealSense 1 (set `false` for USB 2.1 devices) |
-| `sync_delay_s` | `10.0` | Seconds before `sync_bench_node` starts (0 = immediate) |
-| `slop_s` | `0.034` | ApproximateTime max interval (seconds) |
-| `csv_path` | `/tmp/sync_bench.csv` | Output CSV path |
-| `topics` | *(auto-built from active devices)* | Override topic list (YAML, 2–4 entries) |
-
-Topics for `sync_bench_node` are auto-derived from whichever color streams are active. Pass `topics:='[...]'` only when you need a custom subset.
-
-To find RealSense serial numbers: `rs-enumerate-devices | grep "Serial Number"`
-
-## Topics
-
-| Topic | Type | Publisher | Description |
-|-------|------|-----------|-------------|
-| `/cam_uvc_0/image_raw` | `sensor_msgs/Image` | `opencv_cam_node` / `v4l2_camera_node` | UVC camera 0 |
-| `/cam_uvc_1/image_raw` | `sensor_msgs/Image` | `opencv_cam_node` | UVC camera 1 |
-| `/camera_0/camera/color/image_raw` | `sensor_msgs/Image` | `realsense2_camera` | RealSense 0 color |
-| `/camera_0/camera/depth/image_rect_raw` | `sensor_msgs/Image` | `realsense2_camera` | RealSense 0 depth |
-| `/camera_1/camera/color/image_raw` | `sensor_msgs/Image` | `realsense2_camera` | RealSense 1 color |
-| `/camera_1/camera/depth/image_rect_raw` | `sensor_msgs/Image` | `realsense2_camera` | RealSense 1 depth |
-| `/synced_frames` | `cam_sync_msgs/SyncedFrames` | `sync_bench_node` | Bundled N-tuple after each match |
-
-The extra `camera/` segment in RealSense topics is a realsense2_camera v4.x naming convention (namespace + camera_name both default to `camera`).
 
 ## CSV output
 
