@@ -103,10 +103,26 @@ template<> struct PolicyHelper<4> {
   using type = mf::sync_policies::ApproximateTime<Image, Image, Image, Image>;
 };
 
+template<> struct PolicyHelper<5> {
+  using type = mf::sync_policies::ApproximateTime<Image, Image, Image, Image, Image>;
+};
+
+template<> struct PolicyHelper<6> {
+  using type = mf::sync_policies::ApproximateTime<Image, Image, Image, Image, Image, Image>;
+};
+
+template<> struct PolicyHelper<7> {
+  using type = mf::sync_policies::ApproximateTime<Image, Image, Image, Image, Image, Image, Image>;
+};
+
+template<> struct PolicyHelper<8> {
+  using type = mf::sync_policies::ApproximateTime<Image, Image, Image, Image, Image, Image, Image, Image>;
+};
+
 // ── N-topic benchmark node ────────────────────────────────────────────────────
 template<size_t N>
 class BenchN : public rclcpp::Node {
-  static_assert(N >= 2 && N <= 4, "N must be 2, 3, or 4");
+  static_assert(N >= 2 && N <= 8, "N must be 2, 3, or 4 (or 5,6,7,8 with more policy specialisations)");
   static constexpr size_t P = N * (N - 1) / 2;   // number of unique pairs
 
   using Policy = typename PolicyHelper<N>::type;
@@ -172,6 +188,14 @@ private:
       sync_ = std::make_shared<Sync>(Policy(queue_size_), subs_[0], subs_[1], subs_[2]);
     else if constexpr (N == 4)
       sync_ = std::make_shared<Sync>(Policy(queue_size_), subs_[0], subs_[1], subs_[2], subs_[3]);
+    else if constexpr (N == 5)
+      sync_ = std::make_shared<Sync>(Policy(queue_size_), subs_[0], subs_[1], subs_[2], subs_[3], subs_[4]);
+    else if constexpr (N == 6)
+      sync_ = std::make_shared<Sync>(Policy(queue_size_), subs_[0], subs_[1], subs_[2], subs_[3], subs_[4], subs_[5]);
+    else if constexpr (N == 7)
+      sync_ = std::make_shared<Sync>(Policy(queue_size_), subs_[0], subs_[1], subs_[2], subs_[3], subs_[4], subs_[5], subs_[6]);
+    else if constexpr (N == 8)
+      sync_ = std::make_shared<Sync>(Policy(queue_size_), subs_[0], subs_[1], subs_[2], subs_[3], subs_[4], subs_[5], subs_[6], subs_[7]);
     sync_->setMaxIntervalDuration(rclcpp::Duration::from_seconds(slop_s_));
   }
 
@@ -189,6 +213,28 @@ private:
                   const Image::ConstSharedPtr& c, const Image::ConstSharedPtr& d) {
     if constexpr (N == 4) process({a, b, c, d});
   }
+  void on_frame_5(const Image::ConstSharedPtr& a, const Image::ConstSharedPtr& b,
+                  const Image::ConstSharedPtr& c, const Image::ConstSharedPtr& d,
+                  const Image::ConstSharedPtr& e) {
+    if constexpr (N == 5) process({a, b, c, d, e});
+  }
+  void on_frame_6(const Image::ConstSharedPtr& a, const Image::ConstSharedPtr& b,
+                  const Image::ConstSharedPtr& c, const Image::ConstSharedPtr& d,
+                  const Image::ConstSharedPtr& e, const Image::ConstSharedPtr& f) {
+    if constexpr (N == 6) process({a, b, c, d, e, f});
+  }
+  void on_frame_7(const Image::ConstSharedPtr& a, const Image::ConstSharedPtr& b,
+                  const Image::ConstSharedPtr& c, const Image::ConstSharedPtr& d,
+                  const Image::ConstSharedPtr& e, const Image::ConstSharedPtr& f,
+                  const Image::ConstSharedPtr& g) {
+    if constexpr (N == 7) process({a, b, c, d, e, f, g});
+  }
+  void on_frame_8(const Image::ConstSharedPtr& a, const Image::ConstSharedPtr& b,
+                  const Image::ConstSharedPtr& c, const Image::ConstSharedPtr& d,
+                  const Image::ConstSharedPtr& e, const Image::ConstSharedPtr& f,
+                  const Image::ConstSharedPtr& g, const Image::ConstSharedPtr& h) {
+    if constexpr (N == 8) process({a, b, c, d, e, f, g, h});
+  }
 
   void register_callback() {
     using namespace std::placeholders;
@@ -198,6 +244,14 @@ private:
       sync_->registerCallback(std::bind(&BenchN<N>::on_frame_3, this, _1, _2, _3));
     else if constexpr (N == 4)
       sync_->registerCallback(std::bind(&BenchN<N>::on_frame_4, this, _1, _2, _3, _4));
+    else if constexpr (N == 5)
+      sync_->registerCallback(std::bind(&BenchN<N>::on_frame_5, this, _1, _2, _3, _4, _5));
+    else if constexpr (N == 6)
+      sync_->registerCallback(std::bind(&BenchN<N>::on_frame_6, this, _1, _2, _3, _4, _5, _6));
+    else if constexpr (N == 7)
+      sync_->registerCallback(std::bind(&BenchN<N>::on_frame_7, this, _1, _2, _3, _4, _5, _6, _7));
+    else if constexpr (N == 8)
+      sync_->registerCallback(std::bind(&BenchN<N>::on_frame_8, this, _1, _2, _3, _4, _5, _6, _7, _8));
   }
 
   // N-agnostic: all data handling below here works for any N.
@@ -337,9 +391,13 @@ int main(int argc, char** argv) {
     case 2: node = std::make_shared<BenchN<2>>(topics); break;
     case 3: node = std::make_shared<BenchN<3>>(topics); break;
     case 4: node = std::make_shared<BenchN<4>>(topics); break;
+    case 5: node = std::make_shared<BenchN<5>>(topics); break;
+    case 6: node = std::make_shared<BenchN<6>>(topics); break;
+    case 7: node = std::make_shared<BenchN<7>>(topics); break;
+    case 8: node = std::make_shared<BenchN<8>>(topics); break;
     default:
       RCLCPP_FATAL(rclcpp::get_logger("sync_bench"),
-          "topics must have 2, 3, or 4 entries (got %zu)", topics.size());
+          "topics must have 2–8 entries (got %zu)", topics.size());
       rclcpp::shutdown();
       return 1;
   }

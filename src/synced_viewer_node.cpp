@@ -111,23 +111,37 @@ static cv::Mat to_bgr(const Image& msg) {
   return cv_bridge::toCvCopy(std::make_shared<Image>(msg), "bgr8")->image;
 }
 
-// ── Grid builder (N-agnostic) ────────────────────────────────────────────────
+// ── Grid builder — layout driven entirely by N from the incoming message ─────
+// N≤3 → single row.  N≥4 → 2 rows, ceil(N/2) cols.
+// Empty slots (last row when N is odd and ≥5) are filled with black panels.
 static cv::Mat make_grid(std::vector<cv::Mat>& panels) {
   if (panels.empty()) return {};
-  for (size_t i = 1; i < panels.size(); ++i)
+  const int N = static_cast<int>(panels.size());
+
+  for (int i = 1; i < N; ++i)
     if (panels[i].size() != panels[0].size())
       cv::resize(panels[i], panels[i], panels[0].size());
 
-  if (panels.size() <= 3) {
+  const int rows = (N <= 3) ? 1 : 2;
+  const int cols = (N + rows - 1) / rows;
+
+  // Pad with black to fill the rectangular grid.
+  cv::Mat blank = cv::Mat::zeros(panels[0].size(), panels[0].type());
+  while (static_cast<int>(panels.size()) < rows * cols)
+    panels.push_back(blank);
+
+  std::vector<cv::Mat> row_imgs;
+  for (int r = 0; r < rows; ++r) {
+    std::vector<cv::Mat> row_panels(
+        panels.begin() + r * cols,
+        panels.begin() + (r + 1) * cols);
     cv::Mat row;
-    cv::hconcat(panels, row);
-    return row;
+    cv::hconcat(row_panels, row);
+    row_imgs.push_back(row);
   }
-  // N=4: 2×2
-  cv::Mat top, bot, grid;
-  cv::hconcat(std::vector<cv::Mat>{panels[0], panels[1]}, top);
-  cv::hconcat(std::vector<cv::Mat>{panels[2], panels[3]}, bot);
-  cv::vconcat(std::vector<cv::Mat>{top, bot}, grid);
+
+  cv::Mat grid;
+  cv::vconcat(row_imgs, grid);
   return grid;
 }
 

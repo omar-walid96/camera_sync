@@ -24,8 +24,12 @@ count = 50
 size = 1048576
 count = 64
 
-# 4 MB chunks — one cam_sync_msgs/SyncedFrames bundle with 4 color frames
-# (~3.7 MB serialised). 16 slots is sufficient at 30 Hz.
+# 4 MB chunks — SyncedFrames bundle with up to 4 color frames (~3.7 MB).
 [[segment.mempool]]
 size = 4194304
 count = 16
+
+# 8 MB chunks — SyncedFrames bundle with 5–8 color frames (up to ~7.4 MB).
+[[segment.mempool]]
+size = 8388608
+count = 8
